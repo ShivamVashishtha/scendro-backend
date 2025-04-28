@@ -217,49 +217,67 @@ def recommend_portfolio(request: RecommendationRequest):
 def ai_chat(request: ChatRequest):
     try:
         match = re.search(r'\b[A-Z]{2,5}\b', request.question.upper())
-        indicators = ""
+        ticker = match.group(0) if match else "TSLA"
 
-        if match:
-            ticker = match.group(0)
-            features, meta = create_features(ticker)
-            headlines = fetch_news(ticker)
+        # Updated: capture full price history with fallback
+        ticker_obj = yf.Ticker(ticker)
+        history = ticker_obj.history(period="7d", interval="1h", prepost=True)
+        if history.empty or history["Close"].isnull().all():
+            history = ticker_obj.history(period="1d", interval="1m", prepost=True)
+        
+        if history.empty:
+            raise ValueError(f"No data found for {ticker}")
+        
+        latest_price = history["Close"].iloc[-1]
+        latest_timestamp = history.index[-1].strftime("%Y-%m-%d %H:%M %p EST")
 
-            indicators = (
-                f"\n\n## {ticker} Snapshot\n\n"
-                f"- Price: ${meta['latest_price']:.2f}\n"
-                f"- RSI: {meta['rsi']:.2f}\n"
-                f"- Volatility: {meta['volatility']:.4f}\n"
-                f"- Earnings Growth: {meta['growth']:.2f}\n"
-                f"- PE Ratio: {meta['pe']:.2f}\n"
-                f"- Sector: {meta['sector']}\n"
-                f"- News Headlines:\n" + "\n".join([f"  - {h}" for h in headlines])
-            )
-        else:
-            indicators = ""
+        features, meta = create_features(ticker)
+        headlines = fetch_news(ticker)
+
+        indicators = (
+            f"## {ticker} Snapshot\n\n"
+            f"- Price: ${latest_price:.2f} (as of {latest_timestamp})\n"
+            f"- RSI: {meta['rsi']:.2f}\n"
+            f"- Volatility: {meta['volatility']:.4f}\n"
+            f"- Earnings Growth: {meta['growth']:.2f}\n"
+            f"- PE Ratio: {meta['pe']:.2f}\n"
+            f"- Sector: {meta['sector']}\n"
+            f"- News Headlines:\n" + "\n".join([f"  - {h}" for h in headlines])
+        )
 
         messages = [
             {"role": "system", "content": (
-                "You are InciteAI, a world-class expert in stock trading, market forecasting, investing, risk management, and financial strategy. "
-                "If the user asks about a stock, include analysis using the provided indicators. "
-                "Otherwise, intelligently answer any finance-related question with deep insights. "
-                "Respond in clear markdown format for readability."
+                "You are InciteAI, a sophisticated stock strategist. You analyze any trading-related question. "
+                "Respond in markdown format with these sections:\n\n"
+                "## Market Outlook\n"
+                "## Indicator Breakdown\n"
+                "## Sentiment Summary\n"
+                "## Recommended Action: *Buy*/*Sell*/*Hold*/*Wait* (only if applicable)\n"
+                "## Confidence Score: (0–100%) (only if applicable)"
             )},
-            {"role": "user", "content": f"{request.question}{indicators}"}
+            {"role": "user", "content": f"{request.question}\n\n{indicators}"}
         ]
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            temperature=0.6,
-            max_tokens=800
+            temperature=0.5,
+            max_tokens=700
         )
 
         content = response.choices[0].message.content.strip()
 
+        # Optional: try parsing Action and Confidence if AI included them
+        action_match = re.search(r"\*\*Recommended Action\*\*:\s?\*?([A-Za-z]+)\*?", content)
+        confidence_match = re.search(r"\*\*Confidence Score\*\*:\s?(\d+)%?", content)
+
+        action = action_match.group(1).capitalize() if action_match else "Unknown"
+        confidence = confidence_match.group(1) if confidence_match else "?"
+
         return {
             "reasoning": content,
-            "recommended_action": None,
-            "confidence_score": None
+            "recommended_action": action,
+            "confidence_score": confidence
         }
 
     except Exception as e:
