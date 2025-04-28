@@ -216,44 +216,49 @@ def recommend_portfolio(request: RecommendationRequest):
 @app.post("/chat")
 def ai_chat(request: ChatRequest):
     try:
+        # Try to detect a ticker
         match = re.search(r'\b[A-Z]{2,5}\b', request.question.upper())
-        ticker = match.group(0) if match else "TSLA"
-        features, meta = create_features(ticker)
-        headlines = fetch_news(ticker)
+        indicators = ""
 
-        indicators = (
-            f"## {ticker} Snapshot\n\n"
-            f"- Price: ${meta['latest_price']:.2f}\n"
-            f"- RSI: {meta['rsi']:.2f}\n"
-            f"- Volatility: {meta['volatility']:.4f}\n"
-            f"- Earnings Growth: {meta['growth']:.2f}\n"
-            f"- PE Ratio: {meta['pe']:.2f}\n"
-            f"- Sector: {meta['sector']}\n"
-            f"- News Headlines:\n" + "\n".join([f"  - {h}" for h in headlines])
-        )
+        if match:
+            ticker = match.group(0)
+            features, meta = create_features(ticker)
+            headlines = fetch_news(ticker)
+
+            indicators = (
+                f"\n\n## {ticker} Snapshot\n\n"
+                f"- Price: ${meta['latest_price']:.2f}\n"
+                f"- RSI: {meta['rsi']:.2f}\n"
+                f"- Volatility: {meta['volatility']:.4f}\n"
+                f"- Earnings Growth: {meta['growth']:.2f}\n"
+                f"- PE Ratio: {meta['pe']:.2f}\n"
+                f"- Sector: {meta['sector']}\n"
+                f"- News Headlines:\n" + "\n".join([f"  - {h}" for h in headlines])
+            )
+        else:
+            # If no ticker found, don't add indicators
+            indicators = ""
 
         messages = [
             {"role": "system", "content": (
-                "You are InciteAI, a stock strategist specializing in equity, ETF, and trading analytics only. "
-                "Respond with markdown in this format:\n\n"
-                "## Market Outlook\n"
-                "## Indicator Breakdown\n"
-                "## Sentiment Summary\n"
-                "## Recommended Action: *Buy*/*Sell*/*Hold*/*Wait*\n"
-                "## Confidence Score: (0–100%)"
+                "You are InciteAI, a smart financial and market assistant. "
+                "You can answer trading, stock, ETF, and finance-related questions accurately. "
+                "If a ticker is detected, incorporate its data. If not, answer intelligently anyway. "
+                "Respond clearly, professionally, and always use markdown formatting when appropriate."
             )},
-            {"role": "user", "content": f"{request.question}\n\n{indicators}"}
+            {"role": "user", "content": f"{request.question}{indicators}"}
         ]
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.6,
-            max_tokens=700
+            max_tokens=800
         )
 
         content = response.choices[0].message.content.strip()
 
+        # Optional: still try extracting action/confidence if you want
         action_match = re.search(r"\*\*Recommended Action\*\*:\s?\*?([A-Za-z]+)\*?", content)
         confidence_match = re.search(r"\*\*Confidence Score\*\*:\s?(\d+)%?", content)
 
@@ -270,3 +275,4 @@ def ai_chat(request: ChatRequest):
         import traceback
         traceback.print_exc()
         return {"error": str(e)}
+
