@@ -216,7 +216,6 @@ def recommend_portfolio(request: RecommendationRequest):
 @app.post("/chat")
 def ai_chat(request: ChatRequest):
     try:
-        # Try to detect a ticker
         match = re.search(r'\b[A-Z]{2,5}\b', request.question.upper())
         indicators = ""
 
@@ -236,15 +235,14 @@ def ai_chat(request: ChatRequest):
                 f"- News Headlines:\n" + "\n".join([f"  - {h}" for h in headlines])
             )
         else:
-            # If no ticker found, don't add indicators
             indicators = ""
 
         messages = [
             {"role": "system", "content": (
-                "You are InciteAI, a smart financial and market assistant. "
-                "You can answer trading, stock, ETF, and finance-related questions accurately. "
-                "If a ticker is detected, incorporate its data. If not, answer intelligently anyway. "
-                "Respond clearly, professionally, and always use markdown formatting when appropriate."
+                "You are InciteAI, a world-class expert in stock trading, market forecasting, investing, risk management, and financial strategy. "
+                "If the user asks about a stock, include analysis using the provided indicators. "
+                "Otherwise, intelligently answer any finance-related question with deep insights. "
+                "Respond in clear markdown format for readability."
             )},
             {"role": "user", "content": f"{request.question}{indicators}"}
         ]
@@ -258,17 +256,10 @@ def ai_chat(request: ChatRequest):
 
         content = response.choices[0].message.content.strip()
 
-        # Optional: still try extracting action/confidence if you want
-        action_match = re.search(r"\*\*Recommended Action\*\*:\s?\*?([A-Za-z]+)\*?", content)
-        confidence_match = re.search(r"\*\*Confidence Score\*\*:\s?(\d+)%?", content)
-
-        action = action_match.group(1).capitalize() if action_match else "Unknown"
-        confidence = confidence_match.group(1) if confidence_match else "?"
-
         return {
             "reasoning": content,
-            "recommended_action": action,
-            "confidence_score": confidence
+            "recommended_action": None,
+            "confidence_score": None
         }
 
     except Exception as e:
