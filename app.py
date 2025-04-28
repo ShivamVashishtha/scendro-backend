@@ -216,35 +216,55 @@ def recommend_portfolio(request: RecommendationRequest):
 @app.post("/chat")
 def ai_chat(request: ChatRequest):
     try:
+        # Find ticker from question
         match = re.search(r'\b[A-Z]{2,5}\b', request.question.upper())
         ticker = match.group(0) if match else "TSLA"
 
-        # Updated: capture full price history with fallback
+        # Fetch history (7d, 1h interval)
         ticker_obj = yf.Ticker(ticker)
         history = ticker_obj.history(period="7d", interval="1h", prepost=True)
         if history.empty or history["Close"].isnull().all():
             history = ticker_obj.history(period="1d", interval="1m", prepost=True)
-        
+
         if history.empty:
             raise ValueError(f"No data found for {ticker}")
-        
+
+        # Latest price
         latest_price = history["Close"].iloc[-1]
         latest_timestamp = history.index[-1].strftime("%Y-%m-%d %H:%M %p EST")
 
-        features, meta = create_features(ticker)
+        # Real RSI calculation
+        def calculate_rsi(prices, window=14):
+            delta = prices.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            return rsi.iloc[-1]
+
+        real_rsi = calculate_rsi(history["Close"])
+
+        # Volatility
+        returns = history["Close"].pct_change().dropna()
+        volatility = returns.std()
+
+        # Fundamentals
+        pe, rev_growth, sector = fetch_fundamentals(ticker)
         headlines = fetch_news(ticker)
 
+        # Compose indicators
         indicators = (
             f"## {ticker} Snapshot\n\n"
             f"- Price: ${latest_price:.2f} (as of {latest_timestamp})\n"
-            f"- RSI: {meta['rsi']:.2f}\n"
-            f"- Volatility: {meta['volatility']:.4f}\n"
-            f"- Earnings Growth: {meta['growth']:.2f}\n"
-            f"- PE Ratio: {meta['pe']:.2f}\n"
-            f"- Sector: {meta['sector']}\n"
+            f"- RSI: {real_rsi:.2f}\n"
+            f"- Volatility: {volatility:.4f}\n"
+            f"- Earnings Growth: {rev_growth:.2f}\n"
+            f"- PE Ratio: {pe:.2f}\n"
+            f"- Sector: {sector}\n"
             f"- News Headlines:\n" + "\n".join([f"  - {h}" for h in headlines])
         )
 
+        # Chat Prompt
         messages = [
             {"role": "system", "content": (
                 "You are InciteAI, a sophisticated stock strategist. You analyze any trading-related question. "
@@ -262,12 +282,12 @@ def ai_chat(request: ChatRequest):
             model="gpt-4o-mini",
             messages=messages,
             temperature=0.5,
-            max_tokens=700
+            max_tokens=800
         )
 
         content = response.choices[0].message.content.strip()
 
-        # Optional: try parsing Action and Confidence if AI included them
+        # Try parsing Recommended Action and Confidence Score
         action_match = re.search(r"\*\*Recommended Action\*\*:\s?\*?([A-Za-z]+)\*?", content)
         confidence_match = re.search(r"\*\*Confidence Score\*\*:\s?(\d+)%?", content)
 
