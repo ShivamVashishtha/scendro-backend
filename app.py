@@ -16,7 +16,6 @@ import pytz
 import os
 import time
 import re
-import json
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -29,6 +28,7 @@ GNEWS_KEY = os.getenv("GNEWS_API_KEY", "c3908fd05a6295e9175cbb3b4cdf48b8")
 
 app = FastAPI()
 
+# ✅ Allow frontend (React) to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -95,7 +95,7 @@ def create_features(ticker):
         "latest_price": prices.iloc[-1] if not prices.empty else None
     }
 
-# --- AI model training ---
+# --- AI model training on startup ---
 model = None
 scaler = None
 
@@ -110,7 +110,7 @@ def train_model():
     model = XGBRegressor(n_estimators=300, learning_rate=0.08, max_depth=6)
     model.fit(X_scaled, y)
 
-# --- Routes for Options and Paper Trading ---
+# --- API routes for Paper Trading and Options Trading ---
 @app.get("/api/options/dates")
 def get_option_dates(symbol: str):
     ticker = yf.Ticker(symbol)
@@ -177,7 +177,7 @@ def market_status():
     except Exception as e:
         return {"error": str(e)}
 
-# --- Main AI Advisor Routes ---
+# --- AI Advisor API routes ---
 @app.post("/recommend")
 def recommend_portfolio(request: RecommendationRequest):
     results = []
@@ -234,8 +234,13 @@ def ai_chat(request: ChatRequest):
 
         messages = [
             {"role": "system", "content": (
-                "You are a stock strategist AI. ALWAYS respond strictly in this JSON format:\n"
-                "{ \"reasoning\": \"string\", \"recommended_action\": \"Buy/Sell/Hold/Wait\", \"confidence_score\": number }"
+                "You are InciteAI, a stock strategist specializing in equity, ETF, and trading analytics only. "
+                "Respond with markdown in this format:\n\n"
+                "## Market Outlook\n"
+                "## Indicator Breakdown\n"
+                "## Sentiment Summary\n"
+                "## Recommended Action: *Buy*/*Sell*/*Hold*/*Wait*\n"
+                "## Confidence Score: (0–100%)"
             )},
             {"role": "user", "content": f"{request.question}\n\n{indicators}"}
         ]
@@ -243,16 +248,22 @@ def ai_chat(request: ChatRequest):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            temperature=0.4,
-            max_tokens=600
+            temperature=0.6,
+            max_tokens=700
         )
 
-        parsed_response = json.loads(response.choices[0].message.content.strip())
+        content = response.choices[0].message.content.strip()
+
+        action_match = re.search(r"\*\*Recommended Action\*\*:\s?\*?([A-Za-z]+)\*?", content)
+        confidence_match = re.search(r"\*\*Confidence Score\*\*:\s?(\d+)%?", content)
+
+        action = action_match.group(1).capitalize() if action_match else "Unknown"
+        confidence = confidence_match.group(1) if confidence_match else "?"
 
         return {
-            "reasoning": parsed_response.get("reasoning", ""),
-            "recommended_action": parsed_response.get("recommended_action", "Unknown"),
-            "confidence_score": parsed_response.get("confidence_score", "?")
+            "reasoning": content,
+            "recommended_action": action,
+            "confidence_score": confidence
         }
 
     except Exception as e:
