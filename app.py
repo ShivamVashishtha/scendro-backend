@@ -216,64 +216,31 @@ def recommend_portfolio(request: RecommendationRequest):
 @app.post("/chat")
 def ai_chat(request: ChatRequest):
     try:
-        # Find ticker from question
         match = re.search(r'\b[A-Z]{2,5}\b', request.question.upper())
         ticker = match.group(0) if match else "TSLA"
-
-        # Fetch history (7d, 1h interval)
-        ticker_obj = yf.Ticker(ticker)
-        history = ticker_obj.history(period="7d", interval="1h", prepost=True)
-        if history.empty or history["Close"].isnull().all():
-            history = ticker_obj.history(period="1d", interval="1m", prepost=True)
-
-        if history.empty:
-            raise ValueError(f"No data found for {ticker}")
-
-        # Latest price
-        latest_price = history["Close"].iloc[-1]
-        latest_timestamp = history.index[-1].strftime("%Y-%m-%d %H:%M %p EST")
-
-        # Real RSI calculation
-        def calculate_rsi(prices, window=14):
-            delta = prices.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            return rsi.iloc[-1]
-
-        real_rsi = calculate_rsi(history["Close"])
-
-        # Volatility
-        returns = history["Close"].pct_change().dropna()
-        volatility = returns.std()
-
-        # Fundamentals
-        pe, rev_growth, sector = fetch_fundamentals(ticker)
+        features, meta = create_features(ticker)
         headlines = fetch_news(ticker)
 
-        # Compose indicators
         indicators = (
             f"## {ticker} Snapshot\n\n"
-            f"- Price: ${latest_price:.2f} (as of {latest_timestamp})\n"
-            f"- RSI: {real_rsi:.2f}\n"
-            f"- Volatility: {volatility:.4f}\n"
-            f"- Earnings Growth: {rev_growth:.2f}\n"
-            f"- PE Ratio: {pe:.2f}\n"
-            f"- Sector: {sector}\n"
+            f"- Price: ${meta['latest_price']:.2f}\n"
+            f"- RSI: {meta['rsi']:.2f}\n"
+            f"- Volatility: {meta['volatility']:.4f}\n"
+            f"- Earnings Growth: {meta['growth']:.2f}\n"
+            f"- PE Ratio: {meta['pe']:.2f}\n"
+            f"- Sector: {meta['sector']}\n"
             f"- News Headlines:\n" + "\n".join([f"  - {h}" for h in headlines])
         )
 
-        # Chat Prompt
         messages = [
             {"role": "system", "content": (
-                "You are InciteAI, a sophisticated stock strategist. You analyze any trading-related question. "
-                "Respond in markdown format with these sections:\n\n"
+                "You are InciteAI, a stock strategist specializing in equity, ETF, and trading analytics only. "
+                "Respond with markdown in this format:\n\n"
                 "## Market Outlook\n"
                 "## Indicator Breakdown\n"
                 "## Sentiment Summary\n"
-                "## Recommended Action: *Buy*/*Sell*/*Hold*/*Wait* (only if applicable)\n"
-                "## Confidence Score: (0–100%) (only if applicable)"
+                "## Recommended Action: *Buy*/*Sell*/*Hold*/*Wait*\n"
+                "## Confidence Score: (0–100%)"
             )},
             {"role": "user", "content": f"{request.question}\n\n{indicators}"}
         ]
@@ -281,13 +248,12 @@ def ai_chat(request: ChatRequest):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=messages,
-            temperature=0.5,
-            max_tokens=800
+            temperature=0.6,
+            max_tokens=700
         )
 
         content = response.choices[0].message.content.strip()
 
-        # Try parsing Recommended Action and Confidence Score
         action_match = re.search(r"\*\*Recommended Action\*\*:\s?\*?([A-Za-z]+)\*?", content)
         confidence_match = re.search(r"\*\*Confidence Score\*\*:\s?(\d+)%?", content)
 
@@ -303,5 +269,140 @@ def ai_chat(request: ChatRequest):
     except Exception as e:
         import traceback
         traceback.print_exc()
+        return {"error": str(e)}
+
+@app.get("/api/historical")
+def get_historical(symbol: str, range: str = "1M"):
+    try:
+        ticker = yf.Ticker(symbol)
+        
+        # Map the frontend range to yfinance intervals and periods
+        range_mapping = {
+            "1D": ("1d", "5m"),
+            "5D": ("5d", "15m"),
+            "1M": ("1mo", "60m"),
+            "3M": ("3mo", "1d"),
+            "YTD": ("ytd", "1d"),
+            "5Y": ("5y", "1wk"),
+            "Max": ("max", "1mo")
+        }
+        
+        period, interval = range_mapping.get(range, ("1mo", "60m"))
+        
+        history = ticker.history(period=period, interval=interval, prepost=True)
+        if history.empty:
+            raise ValueError("No historical data available")
+        
+        prices = []
+        for index, row in history.iterrows():
+            prices.append({
+                "time": index.strftime("%Y-%m-%d %H:%M"),
+                "price": round(row["Close"], 2)
+            })
+        
+        return {"prices": prices}
+    
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/ai-stock-insight")
+def ai_stock_insight(symbol: str):
+    try:
+        ticker = yf.Ticker(symbol)
+
+        history = ticker.history(period="7d", interval="1d", prepost=True)
+        if history.empty:
+            raise ValueError("No recent data available")
+
+        # Calculate basic volatility
+        returns = history["Close"].pct_change().dropna()
+        volatility = returns.std()
+
+        # Fetch some basic info
+        info = ticker.info
+        company_name = info.get("shortName", symbol)
+        sector = info.get("sector", "Unknown Sector")
+        current_price = history["Close"].iloc[-1]
+
+        # Fetch 1-2 news headlines
+        news = fetch_news(symbol)
+        news_snippet = ". ".join(news[:2]) if news else "No major news recently."
+
+        # Now form a prompt
+        prompt = f"""
+You are a professional stock trading AI assistant.
+
+Here are the stock details:
+- Company: {company_name}
+- Sector: {sector}
+- Current Price: ${current_price:.2f}
+- 7-day volatility (higher means more risky): {volatility:.4f}
+- Latest News: {news_snippet}
+
+Based on this, briefly analyze the risk level of this stock in 2 sentences. Then, based on the risk and market context, give a short trading suggestion in 1-2 sentences.
+Keep your language casual, simple, and clear (no technical jargon like beta or standard deviation). Assume the reader is a beginner.
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=300
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        return {
+            "ai_analysis": content
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+
+@app.get("/api/ai-option-insight")
+def ai_option_insight(symbol: str, strike: float, option_type: str, current_price: float):
+    try:
+        ticker = yf.Ticker(symbol)
+
+        history = ticker.history(period="7d", interval="1h", prepost=True)
+        if history.empty:
+            raise ValueError("No recent intraday data available")
+
+        latest_price = history["Close"].iloc[-1]
+
+        trend_direction = "uptrend" if latest_price > history["Close"].iloc[0] else "downtrend"
+
+        prompt = f"""
+You are an options trading AI advisor.
+
+Here are the option details:
+- Underlying Stock Symbol: {symbol}
+- Current Stock Price: ${current_price:.2f}
+- Option Type: {option_type} (CALL or PUT)
+- Strike Price: {strike}
+- Stock's recent price trend: {trend_direction}
+
+Based on this, write:
+1. A short 2-sentence risk analysis for this option trade
+2. A short 2-sentence recommendation on whether buying this option is a good idea or not
+
+Keep it simple and human-readable, no technical terms like delta, gamma, or implied volatility.
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=300
+        )
+
+        content = response.choices[0].message.content.strip()
+
+        return {
+            "ai_analysis": content
+        }
+    except Exception as e:
         return {"error": str(e)}
 
