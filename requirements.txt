@@ -60,4 +60,4 @@ wrapt==1.17.2
 xgboost==3.0.0
 xlrd==1.2.0
 XlsxWriter==3.2.0
-yfinance==0.2.55
+yfinance==0.2.58
